@@ -1,0 +1,7 @@
+# virtual environment
+.venv/
+
+# python cache
+__pyc
+# logs
+*.log
