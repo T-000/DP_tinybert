@@ -1,6 +1,11 @@
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
-def load_tinybert(model_name: str, num_labels: int):
-    tok = AutoTokenizer.from_pretrained(model_name, use_fast=True)
-    model = AutoModelForSequenceClassification.from_pretrained(model_name, num_labels=num_labels)
-    return tok, model
+MODEL_NAME = "prajjwal1/bert-tiny"
+
+def load_tinybert(num_labels: int):
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=True)
+    model = AutoModelForSequenceClassification.from_pretrained(
+        MODEL_NAME,
+        num_labels=num_labels
+    )
+    return tokenizer, model
