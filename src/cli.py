@@ -5,10 +5,10 @@ import random
 import numpy as np
 import torch
 
-from data.glue import get_task, load_glue, finalize_format
-from models.tinybert import load_tinybert
-from methods import METHODS
-from training.trainer import train
+from src.data.glue import get_task, load_glue, finalize_format
+from src.models.tinybert import load_tinybert
+from src.methods import METHODS
+from src.training.trainer import train
 
 
 # ------------------------
@@ -178,7 +178,7 @@ def main():
                 batch_size=args.batch_size,
                 lr=args.lr,
             )
-
+            print("WRITE CSV:", dataset_name, method_name, summary["best"])
             update_results_csv(
                 args.results_csv,
                 dataset_name,

@@ -5,7 +5,7 @@ import torch
 from torch.utils.data import DataLoader
 from transformers import DataCollatorWithPadding, get_linear_schedule_with_warmup
 
-from utils.metrics import get_metric
+from src.utils.metrics import get_metric
 
 
 def get_device():
@@ -107,7 +107,8 @@ def train(
             loss = outputs.loss
 
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+            torch.nn.utils.clip_grad_norm_(
+                [p for p in model.parameters() if p.requires_grad],max_grad_norm)
 
             optimizer.step()
             scheduler.step()
