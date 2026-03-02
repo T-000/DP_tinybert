@@ -13,4 +13,5 @@ __pycache__/
 
 # Training outputs
 results/
+src/results/
 *.pt
