@@ -5,10 +5,10 @@ import random
 import numpy as np
 import torch
 
-from datasets.glue import get_task, load_glue, finalize_format
+from data.glue import get_task, load_glue, finalize_format
 from models.tinybert import load_tinybert
 from methods import METHODS
-from training.trainer import train_eval
+from training.trainer import train
 
 
 # ------------------------
@@ -143,27 +143,32 @@ def main():
 
             method = METHODS[method_name]
 
+            # build() returns a MODEL now (not BuiltModel)
             if method_name in ["soft_prompt", "prefix"]:
-                built = method.build(base_model, num_virtual_tokens=args.prompt_tokens)
+                model = method.build(base_model, num_virtual_tokens=args.prompt_tokens)
             elif method_name == "lora":
-                built = method.build(
+                model = method.build(
                     base_model,
                     r=args.lora_r,
                     alpha=args.lora_alpha,
                     dropout=args.lora_dropout,
                 )
             else:
-                built = method.build(base_model)
+                model = method.build(base_model)
 
             run_name = f"{dataset_name}__{method_name}"
             out_dir = os.path.join(args.out_dir, run_name)
 
-            print(f"\n=== {run_name} ===")
-            print(f"Trainable params: {built.trainable_params}")
-            print(f"Total params:     {built.total_params}")
+            # compute param stats here
+            trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            total_params = sum(p.numel() for p in model.parameters())
 
-            summary = train_eval(
-                model=built.model,
+            print(f"\n=== {run_name} ===")
+            print(f"Trainable params: {trainable_params}")
+            print(f"Total params:     {total_params}")
+
+            summary = train(
+                model=model,
                 tokenizer=tokenizer,
                 train_ds=train_ds,
                 val_ds=val_ds,

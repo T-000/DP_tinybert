@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional, Callable, Dict, List
+from typing import Optional, List
 
 from datasets import load_dataset
 
