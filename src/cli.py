@@ -30,44 +30,62 @@ def ensure_results_csv(path: str):
     if not os.path.exists(path):
         with open(path, "w", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(
-                ["dataset", "metric", "soft_prompt", "prefix", "full_ft", "lora", "linear_probe"]
-            )
+            writer.writerow([
+                "dataset",
+                "method",
+                "metric",
+                "value",
+                "epochs",
+                "lr",
+                "batch_size",
+                "max_length",
+                "seed",
+                "prompt_tokens",
+                "lora_r",
+                "lora_alpha",
+                "lora_dropout",
+                "trainable_params",
+                "total_params",
+            ])
 
 
-def update_results_csv(path: str, dataset: str, metric: str, method: str, value: float):
-    with open(path, "r", newline="") as f:
-        rows = list(csv.DictReader(f))
-
-    row = None
-    for r in rows:
-        if r["dataset"] == dataset:
-            row = r
-            break
-
-    if row is None:
-        row = {
-            "dataset": dataset,
-            "metric": metric,
-            "soft_prompt": "",
-            "prefix": "",
-            "full_ft": "",
-            "lora": "",
-            "linear_probe": "",
-        }
-        rows.append(row)
-
-    row["metric"] = metric
-    row[method] = f"{value:.4f}"
-
-    with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=["dataset", "metric", "soft_prompt", "prefix", "full_ft", "lora", "linear_probe"],
-        )
-        writer.writeheader()
-        writer.writerows(rows)
-
+def append_results_csv(
+    path: str,
+    dataset: str,
+    method: str,
+    metric: str,
+    value: float,
+    epochs: int,
+    lr: float,
+    batch_size: int,
+    max_length: int,
+    seed: int,
+    prompt_tokens: int | None,
+    lora_r: int | None,
+    lora_alpha: int | None,
+    lora_dropout: float | None,
+    trainable_params: int,
+    total_params: int,
+):
+    with open(path, "a", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            dataset,
+            method,
+            metric,
+            f"{value:.4f}",
+            epochs,
+            lr,
+            batch_size,
+            max_length,
+            seed,
+            "" if prompt_tokens is None else prompt_tokens,
+            "" if lora_r is None else lora_r,
+            "" if lora_alpha is None else lora_alpha,
+            "" if lora_dropout is None else lora_dropout,
+            trainable_params,
+            total_params,
+        ])
 
 # ------------------------
 # Main
@@ -179,12 +197,29 @@ def main():
                 lr=args.lr,
             )
             print("WRITE CSV:", dataset_name, method_name, summary["best"])
-            update_results_csv(
+            # method-specific fields for logging
+            prompt_tokens = args.prompt_tokens if method_name in ["soft_prompt", "prefix"] else None
+            lora_r = args.lora_r if method_name == "lora" else None
+            lora_alpha = args.lora_alpha if method_name == "lora" else None
+            lora_dropout = args.lora_dropout if method_name == "lora" else None
+
+            append_results_csv(
                 args.results_csv,
                 dataset_name,
-                summary["metric"],
                 method_name,
+                summary["metric"],
                 summary["best"],
+                args.epochs,
+                args.lr,
+                args.batch_size,
+                args.max_length,
+                args.seed,
+                prompt_tokens,
+                lora_r,
+                lora_alpha,
+                lora_dropout,
+                trainable_params,
+                total_params,
             )
 
     print("\nAll experiments finished.")
