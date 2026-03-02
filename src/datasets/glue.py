@@ -60,17 +60,6 @@ def load_glue(task: GlueTask):
     return load_dataset("glue", task.subset)
 
 
-def build_preprocess_fn(task: GlueTask, tokenizer, max_length: int) -> Callable[[Dict], Dict]:
-    s1, s2 = task.sentence1_key, task.sentence2_key
-
-    def preprocess(batch: Dict) -> Dict:
-        if s2 is None:
-            return tokenizer(batch[s1], truncation=True, max_length=max_length)
-        return tokenizer(batch[s1], batch[s2], truncation=True, max_length=max_length)
-
-    return preprocess
-
-
 def finalize_format(ds, keep_token_type_ids: bool = True):
     """
     Standardize column name 'label' -> 'labels', and set torch format.
@@ -78,6 +67,7 @@ def finalize_format(ds, keep_token_type_ids: bool = True):
     if "label" in ds["train"].column_names:
         ds = ds.rename_column("label", "labels")
 
+    # for segment embedding
     cols: List[str] = ["input_ids", "attention_mask", "labels"]
     if keep_token_type_ids and "token_type_ids" in ds["train"].column_names:
         cols.append("token_type_ids")
