@@ -1,7 +1,9 @@
 import argparse
 import csv
+from email import parser
 import os
 import random
+from xml.parsers.expat import model
 import numpy as np
 import torch
 
@@ -9,6 +11,7 @@ from src.data.glue import get_task, load_glue, finalize_format
 from src.models.tinybert import load_tinybert
 from src.methods import METHODS
 from src.training.trainer import train
+from src.training.trainer_dp import train_dp
 
 
 # ------------------------
@@ -33,6 +36,7 @@ def ensure_results_csv(path: str):
             writer.writerow([
                 "dataset",
                 "method",
+                "privacy",
                 "metric",
                 "value",
                 "epochs",
@@ -46,6 +50,10 @@ def ensure_results_csv(path: str):
                 "lora_dropout",
                 "trainable_params",
                 "total_params",
+                "epsilon",
+                "delta",
+                "noise_multiplier",
+                "max_grad_norm",
             ])
 
 
@@ -53,6 +61,7 @@ def append_results_csv(
     path: str,
     dataset: str,
     method: str,
+    privacy: str,
     metric: str,
     value: float,
     epochs: int,
@@ -66,6 +75,10 @@ def append_results_csv(
     lora_dropout: float | None,
     trainable_params: int,
     total_params: int,
+    epsilon: float | None = None,
+    delta: float | None = None,
+    noise_multiplier: float | None = None,
+    max_grad_norm: float | None = None, 
 ):
     with open(path, "a", newline="") as f:
         writer = csv.writer(f)
@@ -85,6 +98,10 @@ def append_results_csv(
             "" if lora_dropout is None else lora_dropout,
             trainable_params,
             total_params,
+            "" if epsilon is None else epsilon,
+            "" if delta is None else delta,
+            "" if noise_multiplier is None else noise_multiplier,
+            "" if max_grad_norm is None else max_grad_norm,
         ])
 
 # ------------------------
@@ -114,6 +131,14 @@ def main():
     parser.add_argument("--lora_r", type=int, default=8)
     parser.add_argument("--lora_alpha", type=int, default=16)
     parser.add_argument("--lora_dropout", type=float, default=0.05)
+    
+    parser.add_argument("--privacy", choices=["none", "dp"], default="none")
+
+    # DP knobs 
+    parser.add_argument("--dp_max_grad_norm", type=float, default=0.1)  
+    parser.add_argument("--dp_delta", type=float, default=None)        
+    parser.add_argument("--dp_noise_multiplier", type=float, default=None) 
+    parser.add_argument("--dp_target_epsilon", type=float, default=None)   
 
     args = parser.parse_args()
 
@@ -185,18 +210,52 @@ def main():
             print(f"Trainable params: {trainable_params}")
             print(f"Total params:     {total_params}")
 
-            summary = train(
-                model=model,
-                tokenizer=tokenizer,
-                train_ds=train_ds,
-                val_ds=val_ds,
-                task_name=dataset_name,
-                out_dir=out_dir,
-                epochs=args.epochs,
-                batch_size=args.batch_size,
-                lr=args.lr,
-            )
+            if args.privacy == "dp":
+                summary = train_dp(
+                    model=model,
+                    tokenizer=tokenizer,
+                    train_ds=train_ds,
+                    val_ds=val_ds,
+                    task_name=dataset_name,
+                    out_dir=out_dir,
+                    epochs=args.epochs,
+                    batch_size=args.batch_size,
+                    lr=args.lr,
+                    max_grad_norm=args.dp_max_grad_norm,
+                    delta=args.dp_delta,
+                    noise_multiplier=args.dp_noise_multiplier,
+                    target_epsilon=args.dp_target_epsilon,
+                    )
+            else:
+                summary = train(
+                    model=model,
+                    tokenizer=tokenizer,
+                    train_ds=train_ds,
+                    val_ds=val_ds,
+                    task_name=dataset_name,
+                    out_dir=out_dir,
+                    epochs=args.epochs,
+                    batch_size=args.batch_size,
+                    lr=args.lr,
+                )
             print("WRITE CSV:", dataset_name, method_name, summary["best"])
+            
+            # DP logging
+            privacy = args.privacy
+
+            epsilon = None
+            delta = None
+            noise_multiplier = None
+            max_grad_norm = None
+
+            if privacy == "dp":
+                dp = summary.get("dp", {})
+                epsilon = dp.get("epsilon")
+                delta = dp.get("delta")
+                noise_multiplier = dp.get("noise_multiplier")
+                max_grad_norm = dp.get("max_grad_norm")
+            else:
+                epsilon = "inf"
             # method-specific fields for logging
             prompt_tokens = args.prompt_tokens if method_name in ["soft_prompt", "prefix"] else None
             lora_r = args.lora_r if method_name == "lora" else None
@@ -207,6 +266,7 @@ def main():
                 args.results_csv,
                 dataset_name,
                 method_name,
+                privacy,
                 summary["metric"],
                 summary["best"],
                 args.epochs,
@@ -220,6 +280,10 @@ def main():
                 lora_dropout,
                 trainable_params,
                 total_params,
+                epsilon,
+                delta,
+                noise_multiplier,
+                max_grad_norm,
             )
 
     print("\nAll experiments finished.")
