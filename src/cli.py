@@ -54,7 +54,7 @@ def ensure_results_csv(path: str):
             "delta",
             "noise_multiplier",
             "max_grad_norm",
-            "microbatch_size",
+            #"microbatch_size",
         ]
         with open(path, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -83,7 +83,7 @@ def append_results_csv(
     delta,
     noise_multiplier,
     max_grad_norm,
-    microbatch_size=None,
+    #microbatch_size=None,
 ):
     fieldnames = [
         "dataset",
@@ -106,7 +106,7 @@ def append_results_csv(
         "delta",
         "noise_multiplier",
         "max_grad_norm",
-        "microbatch_size",
+        #"microbatch_size",
     ]
 
     row = {
@@ -130,7 +130,7 @@ def append_results_csv(
         "delta": "" if delta is None else delta,
         "noise_multiplier": "" if noise_multiplier is None else noise_multiplier,
         "max_grad_norm": "" if max_grad_norm is None else max_grad_norm,
-        "microbatch_size": "" if microbatch_size is None else microbatch_size,
+        #"microbatch_size": "" if microbatch_size is None else microbatch_size,
     }
 
     file_exists = os.path.exists(path)
@@ -174,6 +174,16 @@ def sort_results_csv(path: str):
         writer.writeheader()
         writer.writerows(rows)
 
+def count_params_with_frozen_base(model):
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total = sum(p.numel() for p in model.parameters())
+
+    # if we stored frozen base out of module tree
+    if hasattr(model, "__dict__") and "_frozen_base_model" in model.__dict__:
+        base = model.__dict__["_frozen_base_model"]
+        total += sum(p.numel() for p in base.parameters())
+    return trainable, total
+
 # ------------------------
 # Main
 # ------------------------
@@ -209,7 +219,7 @@ def main():
     parser.add_argument("--dp_delta", type=float, default=None)        
     parser.add_argument("--dp_noise_multiplier", type=float, default=None) 
     parser.add_argument("--dp_target_epsilon", type=float, default=None)
-    parser.add_argument("--microbatch_size", type=int, default=8)  
+    #parser.add_argument("--dp_microbatch_size", type=int, default=None)  
 
     args = parser.parse_args()
 
@@ -287,8 +297,9 @@ def main():
             out_dir = os.path.join(args.out_dir, run_name)
 
             # compute param stats here
-            trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-            total_params = sum(p.numel() for p in model.parameters())
+            #trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            #total_params = sum(p.numel() for p in model.parameters())
+            trainable_params, total_params = count_params_with_frozen_base(model)
 
             print(f"\n=== {run_name} ===")
             print(f"Trainable params: {trainable_params}")
@@ -309,7 +320,7 @@ def main():
                     delta=args.dp_delta,
                     noise_multiplier=args.dp_noise_multiplier,
                     target_epsilon=args.dp_target_epsilon,
-                    microbatch_size=8,
+                    #microbatch_size=args.dp_microbatch_size,
                     )
             else:
                 summary = train(
@@ -332,7 +343,7 @@ def main():
             delta = None
             noise_multiplier = None
             max_grad_norm = None
-            microbatch_size = None
+            #microbatch_size = None
 
             if privacy == "dp":
                 dp = summary.get("dp", {})
@@ -340,7 +351,7 @@ def main():
                 delta = dp.get("delta")
                 noise_multiplier = dp.get("noise_multiplier")
                 max_grad_norm = dp.get("max_grad_norm")
-                microbatch_size = dp.get("microbatch_size")
+                #microbatch_size = dp.get("microbatch_size")
             else:
                 epsilon = "inf"
             # method-specific fields for logging
@@ -371,7 +382,7 @@ def main():
                 delta=delta,
                 noise_multiplier=noise_multiplier,
                 max_grad_norm=max_grad_norm,
-                microbatch_size=microbatch_size,
+                #microbatch_size=microbatch_size,
             )
             sort_results_csv(args.results_csv)
 

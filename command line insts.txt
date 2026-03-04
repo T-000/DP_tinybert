@@ -1,0 +1,2 @@
+python -m src.cli --datasets sst2 --methods soft_prompt --privacy dp --epochs 1 --batch_size 32 --dp_target_epsilon 8
+python -m src.cli --datasets sst2 --methods prefix --privacy dp --epochs 1 --batch_size 32 --dp_target_epsilon 8

@@ -1,13 +1,13 @@
 import os
 import json
-import math
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from transformers import DataCollatorWithPadding, get_linear_schedule_with_warmup
 
-from opacus.accountants import RDPAccountant
+from opacus import PrivacyEngine
 from opacus.accountants.utils import get_noise_multiplier
+from opacus.validators import ModuleValidator
 
 from src.utils.metrics import get_metric
 
@@ -22,25 +22,30 @@ def get_device():
 
 @torch.no_grad()
 def evaluate(model, dataloader, device, metric_fn):
+    """
+    Assumes: model(**batch_without_labels) returns logits Tensor of shape (bsz, num_labels).
+    """
     model.eval()
     all_preds, all_labels = [], []
 
     for batch in dataloader:
         batch = {k: v.to(device) for k, v in batch.items()}
-        outputs = model(**batch)
-        preds = torch.argmax(outputs.logits, dim=-1)
+
+        labels = batch.get("labels")
+        if labels is None:
+            raise KeyError("Batch has no 'labels'. Check dataset formatting / collator.")
+
+        batch.pop("labels", None)
+
+        logits = model(**batch)  # logits tensor
+        preds = torch.argmax(logits, dim=-1)
 
         all_preds.append(preds.detach().cpu().numpy())
-        all_labels.append(batch["labels"].detach().cpu().numpy())
+        all_labels.append(labels.detach().cpu().numpy())
 
     all_preds = np.concatenate(all_preds, axis=0)
     all_labels = np.concatenate(all_labels, axis=0)
     return metric_fn(all_preds, all_labels)
-
-
-def _global_l2_norm(tensors) -> torch.Tensor:
-    # sqrt(sum_i ||g_i||^2)
-    return torch.sqrt(sum((t.norm(2) ** 2) for t in tensors) + 1e-12)
 
 
 def train_dp(
@@ -55,29 +60,31 @@ def train_dp(
     lr=5e-5,
     weight_decay=0.0,
     warmup_ratio=0.06,
-    max_grad_norm=0.1,        # c
+    max_grad_norm=0.1,        # clipping norm c
     delta=None,               # default 1/N
     noise_multiplier=None,    # sigma
     target_epsilon=None,      # if set, derive sigma
     accountant="rdp",
-    microbatch_size=8,        # IMPORTANT: makes PromptDPSGD fast & readable
 ):
     """
-    Fast, readable PromptDPSGD-style DP-SGD that matches Algorithm 1 conceptually:
-      - compute per-(micro)batch gradient w.r.t. *trainable params only*
-      - clip by global L2 norm to c
-      - add Gaussian noise with std = sigma * c
-      - update parameters
-      - track epsilon with RDP accountant
+    DP training using Opacus PrivacyEngine:
+      - per-sample clipping (DP-SGD)
+      - Gaussian noise
+      - Poisson sampling
+      - RDP accountant, report epsilon
 
-    Notes:
-      - If microbatch_size=1, this is the closest to true per-example clipping.
-      - Larger microbatch_size is a common engineering compromise to speed up training.
+    Assumes wrapper behavior:
+      - model(**batch_with_labels) returns loss Tensor
+      - model(**batch_without_labels) returns logits Tensor
+      - if wrapper stores frozen base out of module tree, it provides move_frozen_base(device)
     """
 
     os.makedirs(out_dir, exist_ok=True)
     device = get_device()
+
     model.to(device)
+    if hasattr(model, "move_frozen_base"):
+        model.move_frozen_base(device)
 
     collator = DataCollatorWithPadding(tokenizer=tokenizer, return_tensors="pt")
 
@@ -97,26 +104,20 @@ def train_dp(
 
     metric_fn, metric_name = get_metric(task_name)
 
-    # Only DP-update trainable params (methods define requires_grad)
+    # Only DP-update trainable params (wrappers set requires_grad)
     params = [p for p in model.parameters() if p.requires_grad]
     if not params:
         raise ValueError("No trainable parameters found. Check requires_grad flags.")
-    
 
     optimizer = torch.optim.SGD(params, lr=lr, weight_decay=weight_decay)
 
-    total_steps = epochs * max(1, len(train_loader))
-    warmup_steps = int(total_steps * warmup_ratio)
-    scheduler = get_linear_schedule_with_warmup(
-        optimizer,
-        num_warmup_steps=warmup_steps,
-        num_training_steps=total_steps,
-    )
-
+    # DP defaults
     N = len(train_ds)
     if delta is None:
         delta = 1.0 / max(1, N)
 
+    # Used to derive sigma from target epsilon.
+    # Under Poisson sampling, q ≈ batch_size / N
     sample_rate = batch_size / max(1, N)
 
     if target_epsilon is not None:
@@ -134,7 +135,34 @@ def train_dp(
     sigma = float(noise_multiplier)
     c = float(max_grad_norm)
 
-    acc = RDPAccountant()
+    # Validate only (don't fix) to avoid losing wrapper's private fields
+    errors = ModuleValidator.validate(model, strict=False)
+    if errors:
+        print("[Opacus] ModuleValidator warnings (not fixed):")
+        for e in errors:
+            print(" -", e)
+
+    privacy_engine = PrivacyEngine(accountant="rdp")
+
+    # Wrap model/optimizer/loader for DP-SGD
+    model, optimizer, train_loader = privacy_engine.make_private(
+        module=model,
+        optimizer=optimizer,
+        data_loader=train_loader,
+        noise_multiplier=sigma,
+        max_grad_norm=c,
+        poisson_sampling=True,          # align with DP accountant assumptions
+        grad_sample_mode="functorch",   # most compatible with transformers
+    )
+
+    # Scheduler AFTER make_private (train_loader may change with poisson sampling)
+    total_steps = epochs * max(1, len(train_loader))
+    warmup_steps = int(total_steps * warmup_ratio)
+    scheduler = get_linear_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=warmup_steps,
+        num_training_steps=total_steps,
+    )
 
     best_score = -1e9
     best_path = os.path.join(out_dir, "best.pt")
@@ -145,69 +173,33 @@ def train_dp(
 
         for batch in train_loader:
             batch = {k: v.to(device) for k, v in batch.items()}
-            bsz = batch["input_ids"].shape[0]
 
-            # We'll accumulate clipped grads over microbatches, then add noise once (Alg.1 line 6 idea)
-            summed_grads = [torch.zeros_like(p, device=device) for p in params]
-            mb_total = 0
+            optimizer.zero_grad(set_to_none=True)
 
-            # microbatch loop
-            for start in range(0, bsz, microbatch_size):
-                mb = {k: v[start : start + microbatch_size] for k, v in batch.items()}
-                mb_size = mb["input_ids"].shape[0]
-                mb_total += mb_size
-
-                optimizer.zero_grad(set_to_none=True)
-
-                out = model(**mb)
-                loss = out.loss
-                loss.backward()
-
-                grads = []
-                for p in params:
-                    if p.grad is None:
-                        grads.append(torch.zeros_like(p, device=device))
-                    else:
-                        grads.append(p.grad.detach().clone())
-
-                # clip microbatch gradient by global norm to c
-                gnorm = _global_l2_norm(grads)
-                coef = min(1.0, c / float(gnorm))
-                grads = [g * coef for g in grads]
-
-                for j in range(len(summed_grads)):
-                    summed_grads[j] += grads[j]
-
-                running_loss += float(loss.detach().cpu()) * mb_size
-
-            # add noise once per step (Gaussian with std = sigma * c), then average
-            std = sigma * c
-            for j, p in enumerate(params):
-                noise = torch.randn_like(p, device=device) * std
-                p.grad = (summed_grads[j] + noise) / max(1, mb_total)
+            # Wrapper returns loss Tensor when labels are present
+            loss = model(**batch)
+            loss.backward()
 
             optimizer.step()
             scheduler.step()
-            optimizer.zero_grad(set_to_none=True)
 
-            # accountant step
-            acc.step(noise_multiplier=sigma, sample_rate=sample_rate)
+            running_loss += float(loss.detach().cpu()) * batch["input_ids"].shape[0]
 
         avg_loss = running_loss / max(1, len(train_ds))
         val_score = evaluate(model, val_loader, device, metric_fn)
-        eps = acc.get_epsilon(delta)
+        eps = privacy_engine.get_epsilon(delta)
 
         print(
             f"[{task_name}][DP] Epoch {epoch} | "
             f"train_loss={avg_loss:.4f} | val_{metric_name}={val_score:.4f} | "
-            f"ε={eps:.3f} (δ={delta:.2e}, σ={sigma:.4f}, c={c:.3f}, micro={microbatch_size})"
+            f"ε={eps:.3f} (δ={delta:.2e}, σ={sigma:.4f}, c={c:.3f})"
         )
 
         if val_score > best_score:
             best_score = val_score
             torch.save(model.state_dict(), best_path)
 
-    final_eps = acc.get_epsilon(delta)
+    final_eps = privacy_engine.get_epsilon(delta)
 
     summary = {
         "task": task_name,
@@ -218,7 +210,7 @@ def train_dp(
             "delta": float(delta),
             "noise_multiplier": float(sigma),
             "max_grad_norm": float(c),
-            "microbatch_size": int(microbatch_size),
+            "microbatch_size": None,
             "accountant": "rdp",
         },
     }
