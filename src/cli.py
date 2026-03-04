@@ -139,6 +139,40 @@ def append_results_csv(
         if not file_exists:
             writer.writeheader()
         writer.writerow(row)
+        
+        
+def sort_results_csv(path: str):
+    import csv
+
+    with open(path, "r", newline="") as f:
+        rows = list(csv.DictReader(f))
+        fieldnames = rows[0].keys() if rows else None
+
+    if not rows:
+        return
+
+    
+    method_order = {
+        "soft_prompt": 0,
+        "prefix": 1,
+        "linear_probe": 2,
+        "lora": 3,
+        "full_ft": 4,
+    }
+    privacy_order = {"none": 0, "dp": 1}
+
+    rows.sort(
+        key=lambda r: (
+            r["dataset"],
+            privacy_order.get(r["privacy"], 99),
+            method_order.get(r["method"], 99),
+        )
+    )
+
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
 
 # ------------------------
 # Main
@@ -174,7 +208,8 @@ def main():
     parser.add_argument("--dp_max_grad_norm", type=float, default=0.1)  
     parser.add_argument("--dp_delta", type=float, default=None)        
     parser.add_argument("--dp_noise_multiplier", type=float, default=None) 
-    parser.add_argument("--dp_target_epsilon", type=float, default=None)   
+    parser.add_argument("--dp_target_epsilon", type=float, default=None)
+    parser.add_argument("--microbatch_size", type=int, default=8)  
 
     args = parser.parse_args()
 
@@ -338,6 +373,7 @@ def main():
                 max_grad_norm=max_grad_norm,
                 microbatch_size=microbatch_size,
             )
+            sort_results_csv(args.results_csv)
 
     print("\nAll experiments finished.")
     print(f"Results saved to: {args.results_csv}")

@@ -101,6 +101,7 @@ def train_dp(
     params = [p for p in model.parameters() if p.requires_grad]
     if not params:
         raise ValueError("No trainable parameters found. Check requires_grad flags.")
+    
 
     optimizer = torch.optim.SGD(params, lr=lr, weight_decay=weight_decay)
 

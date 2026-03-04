@@ -1,4 +1,3 @@
-# Prefix-Tuning wrapper for TinyBERT.
 from functools import cache
 
 import torch
@@ -15,7 +14,7 @@ class PrefixedBertForSequenceClassification(nn.Module):
       - forward passes past_key_values into BERT
 
     Trainable params ~ num_layers * 2 * prefix_len * hidden_size
-    (very clean; no extra MLP)
+    to keep it simple, not adding MLP layer as a Prefix encoder as in the Li paper.
     """
     def __init__(self, base_model: BertForSequenceClassification, num_virtual_tokens: int):
         super().__init__()
