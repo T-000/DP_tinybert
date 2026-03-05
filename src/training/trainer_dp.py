@@ -1,5 +1,6 @@
 import os
 import json
+from xml.parsers.expat import model
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
@@ -20,11 +21,40 @@ def get_device():
     return torch.device("cpu")
 
 
+def _clear_grad_samples(module: torch.nn.Module) -> None:
+    """
+    IMPORTANT: Do NOT delete p.grad_sample (Opacus expects the attribute to exist).
+    Instead, reset it to None to avoid stale shapes across steps.
+    """
+    for p in module.parameters():
+        if hasattr(p, "grad_sample"):
+            p.grad_sample = None
+        if hasattr(p, "_current_grad_sample"):
+            p._current_grad_sample = None
+
+def _debug_check_grad_sample_shapes(model: torch.nn.Module, expected_bs: int) -> None:
+    """
+    Print the first parameter whose grad_sample batch dim != expected_bs.
+    Call this after loss.backward() and BEFORE optimizer.step().
+    """
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        gs = getattr(p, "grad_sample", None)
+        if gs is None:
+            # some params may legitimately have None; skip
+            continue
+        if gs.shape[0] != expected_bs:
+            print(
+                f"[DP DEBUG] grad_sample mismatch: {name} "
+                f"got={gs.shape[0]} expected={expected_bs} "
+                f"param_shape={tuple(p.shape)} grad_sample_shape={tuple(gs.shape)}"
+            )
+            return
+    # If we reach here, all matched (or were None)
+    # print("[DP DEBUG] grad_sample shapes OK")
 @torch.no_grad()
 def evaluate(model, dataloader, device, metric_fn):
-    """
-    Assumes: model(**batch_without_labels) returns logits Tensor of shape (bsz, num_labels).
-    """
     model.eval()
     all_preds, all_labels = [], []
 
@@ -37,7 +67,15 @@ def evaluate(model, dataloader, device, metric_fn):
 
         batch.pop("labels", None)
 
-        logits = model(**batch)  # logits tensor
+        out = model(**batch)
+
+        if torch.is_tensor(out):
+            logits = out
+        elif hasattr(out, "logits"):
+            logits = out.logits
+        else:
+            logits = out[0]
+
         preds = torch.argmax(logits, dim=-1)
 
         all_preds.append(preds.detach().cpu().numpy())
@@ -60,31 +98,26 @@ def train_dp(
     lr=5e-5,
     weight_decay=0.0,
     warmup_ratio=0.06,
-    max_grad_norm=0.1,        # clipping norm c
-    delta=None,               # default 1/N
-    noise_multiplier=None,    # sigma
-    target_epsilon=None,      # if set, derive sigma
+    max_grad_norm=0.1,
+    delta=None,
+    noise_multiplier=None,
+    target_epsilon=None,
     accountant="rdp",
+    method_name: str | None = None,
 ):
-    """
-    DP training using Opacus PrivacyEngine:
-      - per-sample clipping (DP-SGD)
-      - Gaussian noise
-      - Poisson sampling
-      - RDP accountant, report epsilon
-
-    Assumes wrapper behavior:
-      - model(**batch_with_labels) returns loss Tensor
-      - model(**batch_without_labels) returns logits Tensor
-      - if wrapper stores frozen base out of module tree, it provides move_frozen_base(device)
-    """
-
     os.makedirs(out_dir, exist_ok=True)
     device = get_device()
 
     model.to(device)
     if hasattr(model, "move_frozen_base"):
         model.move_frozen_base(device)
+
+    # Opacus requires train mode at make_private time
+    model.train()
+
+    # Make HF models return tuples instead of SequenceClassifierOutput
+    if hasattr(model, "config"):
+        model.config.return_dict = False
 
     collator = DataCollatorWithPadding(tokenizer=tokenizer, return_tensors="pt")
 
@@ -103,21 +136,30 @@ def train_dp(
     )
 
     metric_fn, metric_name = get_metric(task_name)
+    
+        # ------------------------------------------------------------
+    # Full FT patch (Opacus hooks + broadcasted position embeddings)
+    # ------------------------------------------------------------
+    # In full fine-tuning, position_embeddings.weight may produce grad_sample with batch dim = 1
+    # (broadcasted), while other params have batch dim = actual Poisson batch (e.g., 24).
+    # This breaks Opacus' per-sample norm stacking. We freeze position embeddings ONLY for full_ft.
+    if method_name == "full_ft":
+        if hasattr(model, "bert") and hasattr(model.bert, "embeddings"):
+            pe = model.bert.embeddings.position_embeddings
+            for p in pe.parameters():
+                p.requires_grad = False
+            print("[DP] full_ft patch: froze bert.embeddings.position_embeddings to avoid grad_sample batch=1 mismatch.")
 
-    # Only DP-update trainable params (wrappers set requires_grad)
     params = [p for p in model.parameters() if p.requires_grad]
     if not params:
         raise ValueError("No trainable parameters found. Check requires_grad flags.")
 
     optimizer = torch.optim.SGD(params, lr=lr, weight_decay=weight_decay)
 
-    # DP defaults
     N = len(train_ds)
     if delta is None:
         delta = 1.0 / max(1, N)
 
-    # Used to derive sigma from target epsilon.
-    # Under Poisson sampling, q ≈ batch_size / N
     sample_rate = batch_size / max(1, N)
 
     if target_epsilon is not None:
@@ -144,18 +186,21 @@ def train_dp(
 
     privacy_engine = PrivacyEngine(accountant="rdp")
 
-    # Wrap model/optimizer/loader for DP-SGD
+    # wrapper vs non-wrapper grad sampling mode
+    is_wrapper = hasattr(model, "__dict__") and "_frozen_base_model" in model.__dict__
+    gsm = "functorch" if is_wrapper else "hooks"
+
     model, optimizer, train_loader = privacy_engine.make_private(
         module=model,
         optimizer=optimizer,
         data_loader=train_loader,
         noise_multiplier=sigma,
         max_grad_norm=c,
-        poisson_sampling=True,          # align with DP accountant assumptions
-        grad_sample_mode="functorch",   # most compatible with transformers
+        poisson_sampling=True,
+        grad_sample_mode=gsm,
     )
 
-    # Scheduler AFTER make_private (train_loader may change with poisson sampling)
+    # Scheduler AFTER make_private (poisson sampling may change loader length)
     total_steps = epochs * max(1, len(train_loader))
     warmup_steps = int(total_steps * warmup_ratio)
     scheduler = get_linear_schedule_with_warmup(
@@ -175,12 +220,31 @@ def train_dp(
             batch = {k: v.to(device) for k, v in batch.items()}
 
             optimizer.zero_grad(set_to_none=True)
+            _clear_grad_samples(model)  # 清 stale grad_sample
 
-            # Wrapper returns loss Tensor when labels are present
-            loss = model(**batch)
+            out = model(**batch)
+
+            # A: wrapper returns loss Tensor
+            if torch.is_tensor(out):
+                loss = out
+            # B: HF SequenceClassifierOutput
+            elif hasattr(out, "loss") and out.loss is not None:
+                loss = out.loss
+            # C: tuple
+            else:
+                loss = out[0]
+
             loss.backward()
+            
+            expected_bs = batch["input_ids"].shape[0]
+            _debug_check_grad_sample_shapes(model, expected_bs)
 
             optimizer.step()
+
+            # step 后再清一次，防止残留影响下一步
+            _clear_grad_samples(model)
+            optimizer.zero_grad(set_to_none=True)
+
             scheduler.step()
 
             running_loss += float(loss.detach().cpu()) * batch["input_ids"].shape[0]

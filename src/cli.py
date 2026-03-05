@@ -321,6 +321,7 @@ def main():
                     noise_multiplier=args.dp_noise_multiplier,
                     target_epsilon=args.dp_target_epsilon,
                     #microbatch_size=args.dp_microbatch_size,
+                    method_name=method_name,
                     )
             else:
                 summary = train(
