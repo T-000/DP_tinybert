@@ -23,4 +23,5 @@ class SoftPrompt:
         )
 
         model = get_peft_model(base_model, cfg)
+        print("trainable:", [n for n,p in model.named_parameters() if p.requires_grad][:30])
         return model

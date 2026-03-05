@@ -137,7 +137,7 @@ def train_dp(
 
     metric_fn, metric_name = get_metric(task_name)
     
-        # ------------------------------------------------------------
+    # ------------------------------------------------------------
     # Full FT patch (Opacus hooks + broadcasted position embeddings)
     # ------------------------------------------------------------
     # In full fine-tuning, position_embeddings.weight may produce grad_sample with batch dim = 1
@@ -153,8 +153,15 @@ def train_dp(
     params = [p for p in model.parameters() if p.requires_grad]
     if not params:
         raise ValueError("No trainable parameters found. Check requires_grad flags.")
+    
+    print("\n[TRAINABLE PARAMETERS]")
+    for n, p in model.named_parameters():
+        if p.requires_grad:
+            print(" -", n, p.shape)
+    print()
 
-    optimizer = torch.optim.SGD(params, lr=lr, weight_decay=weight_decay)
+    # fix: try adam ???
+    optimizer = torch.optim.AdamW(params, lr=lr, weight_decay=weight_decay)
 
     N = len(train_ds)
     if delta is None:
@@ -187,7 +194,10 @@ def train_dp(
     privacy_engine = PrivacyEngine(accountant="rdp")
 
     # wrapper vs non-wrapper grad sampling mode
-    is_wrapper = hasattr(model, "__dict__") and "_frozen_base_model" in model.__dict__
+    is_wrapper = (
+        hasattr(model, "__dict__")
+        and ("_frozen_base_model" in model.__dict__ or "_frozen_bert" in model.__dict__)
+    )
     gsm = "functorch" if is_wrapper else "hooks"
 
     model, optimizer, train_loader = privacy_engine.make_private(

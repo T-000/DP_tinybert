@@ -15,3 +15,6 @@ __pycache__/
 results/
 src/results/
 *.pt
+
+# Command line instructions
+command_line_insts.txt
