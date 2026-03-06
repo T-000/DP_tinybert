@@ -164,8 +164,9 @@ def sort_results_csv(path: str):
     rows.sort(
         key=lambda r: (
             r["dataset"],
-            privacy_order.get(r["privacy"], 99),
             method_order.get(r["method"], 99),
+            privacy_order.get(r["privacy"], 99),
+            
         )
     )
 

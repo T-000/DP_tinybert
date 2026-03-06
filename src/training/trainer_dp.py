@@ -137,10 +137,8 @@ def train_dp(
 
     metric_fn, metric_name = get_metric(task_name)
     
-    # ------------------------------------------------------------
-    # Full FT patch (Opacus hooks + broadcasted position embeddings)
-    # ------------------------------------------------------------
-    # In full fine-tuning, position_embeddings.weight may produce grad_sample with batch dim = 1
+    
+    # In full_ft, position_embeddings may produce grad_sample with batch dim = 1
     # (broadcasted), while other params have batch dim = actual Poisson batch (e.g., 24).
     # This breaks Opacus' per-sample norm stacking. We freeze position embeddings ONLY for full_ft.
     if method_name == "full_ft":

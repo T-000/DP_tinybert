@@ -12,7 +12,7 @@ __pycache__/
 *.log
 
 # Training outputs
-results/
+results/runs/
 src/results/
 *.pt
 
