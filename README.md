@@ -142,17 +142,17 @@ max_grad_norm
 Some observations from early experiments:
 
 - DP training can be unstable with full fine-tuning.
-- Parameter-efficient methods (LoRA, prompt, prefix) tend to behave better under DP.
 - Later epochs sometimes degrade performance due to noise accumulation.
+- Using Adam optimizer significantly improves accuracy than SGD optimizer.
 
-Because of this the code logs the **best validation score**, not the final epoch.
 
 ---
 
 # Code Structure
 src/
-cli.py
-data/
-models/
-methods/
-training/
+    -cli.py
+    -data/
+    -models/
+    -methods/
+    -training/
+    -utils/
