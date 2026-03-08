@@ -2,8 +2,6 @@
 
 This repo contains a small experimental setup for comparing different parameter-efficient adaptation methods on TinyBERT, both **with and without Differential Privacy (DP)**.
 
-The goal is not to build a full framework, but to run a series of controlled experiments across several GLUE tasks and log results in a consistent format.
-
 Methods implemented:
 
 - Full fine-tuning
@@ -32,7 +30,7 @@ results/tables/results.csv
 
 # Setup
 
-Create environment and install dependencies (roughly):
+Create environment and install dependencies:
 
 pip install torch transformers datasets opacus
 
@@ -139,7 +137,7 @@ noise_multiplier
 max_grad_norm
 
 
-# Notes / Caveats
+# Notes
 
 Some observations from early experiments:
 
